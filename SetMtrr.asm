@@ -15,11 +15,22 @@
 
 @pe_file_flags = 10eh	;jwasm format -pe flags, telling jwasm to create relocations
 
+MSR_MTRRCAPS equ 0FEh
+MSR_MTRR_VAR equ 200h
+MSR_MTRR_FIX64 equ 250h
+MSR_MTRR_FIX16 equ 258h
+MSR_MTRR_FIX4  equ 268h
+MSR_MTRRDEFTYPE equ 02FFh
+MSR_SYSCFG equ 0C0010010h	; AMD only
+MSR_TOP_MEM equ 0C001001Ah	; AMD only
+MSR_TOP_MEM2 equ 0C001001Dh	; AMD only
+
 MTRR_VALID equ 800h	;flag in variable MTRR telling that the region is valid
 
 ;--- flags in MTRR default reg (MSR #2FF)
 MTRR_ENABLED equ 800h
 MTRR_FIXED_ENABLED equ 400h
+MTRR_FIXED_SUPP equ 100h	;flag in MTRR cap msr
 
 CStr macro text:vararg
 local sym
@@ -275,16 +286,23 @@ local vesainfo:VESAINFO
 	shl eax, 16
 	mov dwLFBSize, eax
 
-	movzx ebx, byte ptr [dwCaps]
+	movzx ebx, byte ptr [dwCaps]	;get number of variable MTRRs
 	xor esi, esi
 	mov edi, pRegs
 	.while (ebx)
 		.if ([edi+sizeof REGS].REGS._eax & MTRR_VALID)
 			mov ecx, [edi].REGS._eax
 			mov edx, [edi].REGS._edx
+			mov ax,cx
 			and cx, 0F000h
-			.if ((ecx == dwPhysBase) && (dl == 0))
+			.if ((ecx == dwPhysBase) && (edx == 0) && al == 1 ) ;phys base and WC set?
 				jmp found
+			.endif
+			.if ecx <= dwPhysBase && edx == 0 && al == 0
+				call getupperlimit
+				.if eax > dwPhysBase
+					invoke printf, CStr("WARNING: region with type UC overlaps VESA LFB region",10)
+				.endif
 			.endif
 if 0
 			invoke printf, CStr("msr %X+%X: %X%08X %X%08X "),
@@ -344,6 +362,22 @@ found:
 	.endif
 exit:
 	ret
+getupperlimit:
+	mov eax,[edi+sizeof REGS].REGS._eax
+	mov edx,[edi+sizeof REGS].REGS._edx
+	test ah,8
+	jz notvalid
+	and ax,0F000h
+	xor eax,-1
+	xor edx,-1
+	mov ecx,[edi].REGS._eax
+	and cx,0F000h
+	add eax,ecx
+	adc edx,[edi].REGS._edx
+	retn
+notvalid:
+	xor eax,eax
+	retn
 	align 4
 SetVesa endp
 
@@ -558,7 +592,6 @@ local	regs:REGS
 
 	mov esi, offset regions
 	.while ((esi < offset endregions) && (word ptr [esi+4]))
-		int 3
 		call getcb
 		mov dwCB, edx
 		movzx eax,word ptr [esi+0]
@@ -583,7 +616,7 @@ local	regs:REGS
 			mov ecx, eax
 			and ecx, 7
 			shr eax, 3		;00-07 -> 258, 08-0F -> 259
-			mov ebx, 258h
+			mov ebx, MSR_MTRR_FIX16
 			add ebx, eax
 			mov [regs]._ecx, ebx
 
@@ -637,7 +670,7 @@ local	regs:REGS
 			sub edi, eax
 			inc edi			;pages to modify
 			shr eax, 3		;8 4K pages for 1 mtrr
-			mov ebx, 268h	;regs 268h-26Fh
+			mov ebx, MSR_MTRR_FIX4	;regs 268h-26Fh
 			add ebx, eax
 			mov [regs]._ecx, ebx
 			.while (edi)
@@ -698,7 +731,7 @@ local	regs[80]:REGS
 	invoke GetCmdLine
 	.if (eax == 0 || bUsage)
 ;		invoke printf, CStr("usage: SetMtrr <WC|UC>",13,10)
-		invoke printf, CStr("SetMtrr v1.4 (C) Japheth 2005-2020",10)
+		invoke printf, CStr("SetMtrr v1.5 (C) Japheth 2005-2020",10)
 		invoke printf, CStr("usage: SetMtrr [options]",10)
 		invoke printf, CStr(" options: -? display this help",10)
 		invoke printf, CStr("          -s set VESA LFB to WC, may speedup VESA memory write access.",10)
@@ -767,7 +800,7 @@ nomtrr:
 	.if bSysCfg
 		lea edi, regs
 		mov [edi].REGS._eax, 0
-		mov [edi].REGS._ecx, 0C0010010h
+		mov [edi].REGS._ecx, MSR_SYSCFG
 		invoke r0proc, offset readmsr, r0cs, edi
 		mov eax, [edi].REGS._eax
 		mov dwSysCfg, eax
@@ -789,31 +822,31 @@ nomtrr:
 @@:
 			invoke printf, CStr("SYSCFG(#C0010010): %X (TOP_MEM %s, TOP_MEM2 %s, Memory 4GB-TOP_MEM2: %s)",10), dwSysCfg, eax, ecx, edx
 			.if (dwSysCfg & 100000h)
-				mov [edi].REGS._ecx, 0C001001Ah
+				mov [edi].REGS._ecx, MSR_TOP_MEM
 				invoke r0proc, offset readmsr, r0cs, edi
-				invoke printf, CStr("TOM_MEM(#C001001A): %X%08X",10), [edi].REGS._edx, [edi].REGS._eax
+				invoke printf, CStr("TOP_MEM(#C001001A): %X%08X",10), [edi].REGS._edx, [edi].REGS._eax
 			.endif
 			.if (dwSysCfg & 200000h)
-				mov [edi].REGS._ecx, 0C001001Dh
+				mov [edi].REGS._ecx, MSR_TOP_MEM2
 				invoke r0proc, offset readmsr, r0cs, edi
-				invoke printf, CStr("TOM_MEM2(#C001001D): %X%08X",10), [edi].REGS._edx, [edi].REGS._eax
+				invoke printf, CStr("TOP_MEM2(#C001001D): %X%08X",10), [edi].REGS._edx, [edi].REGS._eax
 			.endif
 		.endif
 	.endif
 
-;--- read the MTRRCAP register (#FE)
+;--- read the MTRRCAPS register (#FE)
 ;--- contains the number of MTRRs in low byte
 
 	lea edi, regs
 	mov [edi].REGS._eax, 0
-	mov [edi].REGS._ecx, 0FEh
+	mov [edi].REGS._ecx, MSR_MTRRCAPS
 	invoke r0proc, offset readmsr, r0cs, edi
 	mov eax, [edi].REGS._eax
 	mov dwCaps, eax
 	movzx esi, al
 	.if (bStatus)
 		mov ecx, CStr("is")
-		test ah,4
+		test ah,4			;bit 10: WC supported
 		jnz @F
 		mov ecx, CStr("is NOT")
 @@:
@@ -822,7 +855,7 @@ nomtrr:
 
 ;--- read all variable MTRRs
 
-	mov ebx, 200h
+	mov ebx, MSR_MTRR_VAR
 	lea edi, regs
 	shl esi, 1
 	.while (esi)
@@ -840,7 +873,7 @@ nomtrr:
 	.if (bStatus)
 		lea edi, regs
 		movzx esi, byte ptr [dwCaps]
-		mov ebx,200h
+		mov ebx,MSR_MTRR_VAR
 		.while (esi)
 
 			invoke printf, CStr("#%X: %08X.%08X  %08X.%08X"),
@@ -874,18 +907,18 @@ nomtrr:
 ;--- display the fixed range registers as well (#250, #258-259, #268-26F)
 ;--- also display the default type MTRR_DEF_TYPE (#2FF)
 
-		.if (dwCaps & 100h)	;fixed MTRRs supported?
+		.if (dwCaps & MTRR_FIXED_SUPP)	;fixed MTRRs supported?
 			lea edi, regs
-			mov [edi].REGS._ecx,250h
+			mov [edi].REGS._ecx,MSR_MTRR_FIX64
 			invoke r0proc, offset readmsr, r0cs, edi
 			invoke printf, CStr(10,"#250: %08X.%08X (FIX64K: 00000-7FFFF)",10), [edi].REGS._edx, [edi].REGS._eax
-			mov [edi].REGS._ecx,258h
+			mov [edi].REGS._ecx,MSR_MTRR_FIX16
 			invoke r0proc, offset readmsr, r0cs, edi
 			invoke printf, CStr("#258: %08X.%08X (FIX16K: 80000-9FFFF)",10), [edi].REGS._edx, [edi].REGS._eax
-			mov [edi].REGS._ecx,259h
+			mov [edi].REGS._ecx,MSR_MTRR_FIX16+1
 			invoke r0proc, offset readmsr, r0cs, edi
 			invoke printf, CStr("#259: %08X.%08X (FIX16K: A0000-BFFFF)",10), [edi].REGS._edx, [edi].REGS._eax
-			mov ebx, 268h
+			mov ebx, MSR_MTRR_FIX4
 			mov esi,8
 			mov edi,0C0000h
 			.while (esi)
@@ -897,6 +930,8 @@ nomtrr:
 				inc ebx
 				dec esi
 			.endw
+		.else
+			invoke printf, CStr(10,"SetMtrr: Fixed MTRRs not supported",10)
 		.endif
 if 0
 		.if ([dwCaps] & 10000h)	;PAT available?
@@ -906,7 +941,7 @@ if 0
 		.endif
 endif
 		;MTRR default
-		mov regs._ecx,2FFh
+		mov regs._ecx,MSR_MTRRDEFTYPE
 		invoke r0proc, offset readmsr, r0cs, addr regs
 		mov cl,byte ptr regs._eax
 		call gettype
@@ -926,7 +961,7 @@ endif
 	.endif
 
 	.if bSetFixed
-		.if (dwCaps & 100h)	;fixed MTRRs supported?
+		.if (dwCaps & MTRR_FIXED_SUPP)	;fixed MTRRs supported?
 			invoke SetFixedMtrr, r0cs
 		.else
 			invoke printf, CStr(10,"SetMtrr: Fixed MTRRs not supported",10)
@@ -938,7 +973,7 @@ endif
 	.endif
 if 0
 	.if bDisableMtrr
-		mov regs._ecx,2FFh
+		mov regs._ecx,MSR_MTRRDEFTYPE
 		invoke r0proc, offset readmsr, r0cs, addr regs
 		btr regs._eax, 11
 		invoke r0proc, offset writemsr, r0cs, addr regs

@@ -14,6 +14,8 @@
   
   History
   
+  11/2020 v1.5
+    - warning displayed if VESA region overlaps with a MTRR region of type UC.
   11/2020 v1.4
     - setting MTRRs requires option -s; without option just current
       status is displayed. Option -i removed.
