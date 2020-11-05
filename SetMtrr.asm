@@ -599,7 +599,10 @@ local	regs:REGS
 
 		push eax
 		movzx ecx,word ptr [esi+4]
-		invoke printf, CStr("SetFixedMtrr: %X %X %X",10), eax, edi, ecx
+		xchg cl,ch
+		push ecx
+		invoke printf, CStr("SetFixedMtrr: %X-%X %s",10), eax, edi, esp
+		add esp,4
 		pop eax
 
 		shr eax, 8			;C000 -> C0
@@ -609,94 +612,106 @@ local	regs:REGS
 		.elseif (eax < 0C0h)	;--- fix16k A000-BFFF?
 			sub eax, 080h   ;80,84 .. B8,BC -> 00,04 .. 38,3C
 			sub edi, 080h
-			shr eax, 2		;00,04 .. 38,3C -> 00,01 .. 0E,0F
+			shr eax, 2		;00,04 .. 38,3C -> 00,01 .. 0e,0f
 			shr edi, 2
 			sub edi, eax
-			inc edi			;16k pages to modify
+			inc edi			;edi=16k pages to modify
 			mov ecx, eax
-			and ecx, 7
-			shr eax, 3		;00-07 -> 258, 08-0F -> 259
+			shr eax, 3		;00-07 -> 0, 08-0F -> 1
 			mov ebx, MSR_MTRR_FIX16
 			add ebx, eax
 			mov [regs]._ecx, ebx
+			lea ebx,regs
+			mov eax,ecx
+			and eax,4
+			add ebx,eax
 
 			mov eax,0FFh
+			and ecx,3
 			shl ecx, 3		;0,1,2,3 -> 0,8,16,24
-			.if (ecx > 31)
-				xor eax, eax
-				sub ecx,32
-				mov edx,0ffh
-				shl edx, cl
-			.else
-				shl eax, cl
-				mov edx, 0ffh
-			.endif
-			mov ecx, edx
+			shl eax, cl
 
 			.while (edi)
-				push ecx
 				push eax
 				invoke r0proc, offset readmsr, r0cs, addr regs
 				pop eax
-				pop ebx
 				.while (edi && eax)
 					mov edx,dwCB
 					and edx, eax
 					not eax
-					and [regs]._eax,eax
-					or [regs]._eax,edx
+					and [ebx],eax
+					or [ebx],edx
 					not eax
-
-					mov edx,dwCB
-					and edx, ebx
-					not ebx
-					and [regs]._edx,ebx
-					or [regs]._edx,edx
-					not ebx
-
 					shl eax, 8
-					shl ebx, 8
 					dec edi
-
+				.endw
+				add ebx,4
+				mov eax,0ffh
+				.while (edi && eax)
+					mov edx,dwCB
+					and edx, eax
+					not eax
+					and [ebx],eax
+					or [ebx],edx
+					not eax
+					shl eax, 8
+					dec edi
 				.endw
 				invoke r0proc, offset writemsr, r0cs, addr regs
 				inc regs._ecx
 				mov eax,0ffh
-				mov ecx,eax
+				lea ebx,regs
 			.endw
 		.else				;--- fix4k C000-FFFF?
 			sub eax, 0C0h	;eax = 0..3F
 			sub edi, 0C0h
 			sub edi, eax
 			inc edi			;pages to modify
+			mov ecx, eax
 			shr eax, 3		;8 4K pages for 1 mtrr
 			mov ebx, MSR_MTRR_FIX4	;regs 268h-26Fh
 			add ebx, eax
 			mov [regs]._ecx, ebx
+			lea ebx,regs
+			mov eax,ecx
+			and eax,4
+			add ebx,eax
+
+			mov eax,0FFh
+			and ecx,3
+			shl ecx,3		;0,1,2,3 -> 0,8,16,24
+			shl eax, cl
+
 			.while (edi)
+				push eax
 				invoke r0proc, offset readmsr, r0cs, addr regs
-				mov eax,0FFh
+				pop eax
 				.while (edi && eax)
-
 					mov edx,dwCB
 					and edx, eax
 					not eax
-					and [regs]._eax,eax
-					or [regs]._eax,edx
+					and [ebx],eax
+					or [ebx],edx
 					not eax
-
+					shl eax, 8
+					dec edi
+				.endw
+				add ebx,4
+				mov eax,0ffh
+				.while (edi && eax)
 					mov edx,dwCB
 					and edx, eax
 					not eax
-					and [regs]._edx,eax
-					or [regs]._edx,edx
+					and [ebx],eax
+					or [ebx],edx
 					not eax
-
 					shl eax, 8
 					dec edi
 				.endw
 				invoke r0proc, offset writemsr, r0cs, addr regs
 				inc regs._ecx
+				mov eax,0FFh
+				lea ebx,regs
 			.endw
 		.endif
 		add esi, 3*2
